@@ -34,16 +34,40 @@ jobs:
           cp output/clash.yaml docs/clash.yaml
           touch docs/.nojekyll
 
-      - name: Commit output
+      - name: Publish to kzeng.github.io clash branch
+        env:
+          PAGES_REPO_TOKEN: ${{ secrets.KZENG_PAGES_TOKEN }}
         run: |
+          if [ -z "$PAGES_REPO_TOKEN" ]; then
+            echo "::error::Missing secret KZENG_PAGES_TOKEN (PAT with repo scope for kzeng/kzeng.github.io)"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add output/clash.yaml docs/clash.yaml docs/.nojekyll
-          if git diff --cached --quiet; then
+
+          PAGES_REPO="https://x-access-token:${PAGES_REPO_TOKEN}@github.com/kzeng/kzeng.github.io.git"
+
+          rm -rf /tmp/fpa-publish
+          mkdir -p /tmp/fpa-publish/docs
+          cp docs/clash.yaml /tmp/fpa-publish/docs/clash.yaml
+          cp docs/.nojekyll /tmp/fpa-publish/docs/.nojekyll
+
+          if git ls-remote --exit-code "$PAGES_REPO" refs/heads/clash >/dev/null 2>&1; then
+            git clone --depth 1 --branch clash "$PAGES_REPO" /tmp/fpa-pages
+          else
+            git clone "$PAGES_REPO" /tmp/fpa-pages
+            git -C /tmp/fpa-pages checkout --orphan clash
+          fi
+
+          git -C /tmp/fpa-pages rm -rf . --quiet 2>/dev/null || true
+          cp -R /tmp/fpa-publish/. /tmp/fpa-pages/
+
+          git -C /tmp/fpa-pages add .
+          if git -C /tmp/fpa-pages diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Update Clash subscription"
-            git push
+            git -C /tmp/fpa-pages commit -m "Update Clash subscription"
+            git -C /tmp/fpa-pages push -f "$PAGES_REPO" clash
           fi
 
       - name: Validate Clash Verge subscription
