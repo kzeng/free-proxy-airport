@@ -7,7 +7,7 @@
 Profiles -> Add URL:
 
 ```text
-https://kzeng.github.io/clash.yaml
+https://kzeng.github.io/static/docs/clash.yaml
 ```
 
 ## 自动更新
@@ -36,6 +36,6 @@ output/clash.yaml
 docs/clash.yaml
 ```
 
-发布方式：工作流将 `docs/clash.yaml` 推送至 `kzeng/kzeng.github.io` 仓库的 `clash` 分支 `/docs` 目录，由 GitHub Pages 托管为 https://kzeng.github.io/clash.yaml。
+发布方式：工作流将 `docs/clash.yaml` 推送至 `kzeng/kzeng.github.io` 仓库的 `clash` 分支 `/static/docs` 目录，由 GitHub Pages 托管为 https://kzeng.github.io/static/docs/clash.yaml。
 
 请仅在遵守当地法律法规和相关服务条款的前提下使用。

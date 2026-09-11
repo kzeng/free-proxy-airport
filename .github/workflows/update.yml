@@ -34,7 +34,7 @@ jobs:
           cp output/clash.yaml docs/clash.yaml
           touch docs/.nojekyll
 
-      - name: Publish to kzeng.github.io clash branch
+      - name: Publish to kzeng.github.io clash branch (static/docs)
         env:
           PAGES_REPO_TOKEN: ${{ secrets.KZENG_PAGES_TOKEN }}
         run: |
@@ -58,11 +58,11 @@ jobs:
           git -C /tmp/fpa-pages config user.name "github-actions[bot]"
           git -C /tmp/fpa-pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          mkdir -p /tmp/fpa-pages/docs
-          cp docs/clash.yaml /tmp/fpa-pages/docs/clash.yaml
-          cp docs/.nojekyll /tmp/fpa-pages/docs/.nojekyll
+          mkdir -p /tmp/fpa-pages/static/docs
+          cp docs/clash.yaml /tmp/fpa-pages/static/docs/clash.yaml
+          cp docs/.nojekyll /tmp/fpa-pages/static/docs/.nojekyll
 
-          git -C /tmp/fpa-pages add docs/clash.yaml docs/.nojekyll
+          git -C /tmp/fpa-pages add static/docs/clash.yaml static/docs/.nojekyll
           if git -C /tmp/fpa-pages diff --cached --quiet; then
             echo "No changes to commit."
           else
