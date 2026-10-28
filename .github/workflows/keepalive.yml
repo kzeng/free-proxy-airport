@@ -1,0 +1,41 @@
+name: Repository Keepalive
+
+on:
+  schedule:
+    # Run away from the top of the hour, when scheduled jobs are busiest.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repository-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+
+      - name: Create an activity commit only when needed
+        shell: bash
+        run: |
+          last_commit="$(git log -1 --format=%ct)"
+          now="$(date +%s)"
+          age_seconds=$((now - last_commit))
+
+          # Keep a margin before GitHub's 60-day schedule inactivity limit.
+          if (( age_seconds < 45 * 24 * 60 * 60 )); then
+            echo "Recent repository activity found; no heartbeat commit needed."
+            exit 0
+          fi
+
+          date -u +"Last keepalive: %Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git commit -m "chore: keep scheduled workflows active"
+          git push
