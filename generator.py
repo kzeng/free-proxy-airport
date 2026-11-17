@@ -30,6 +30,13 @@ import yaml
 VERSION = "v7"
 OUTPUT_PATH = Path("output/clash.yaml")
 TEST_URL = "http://www.gstatic.com/generate_204"
+# kzeng added: 分组健康检查与切换策略，用于抑制节点抖动。
+#   GROUP_INTERVAL  - 每隔多少秒探活一次（原值 120 过于激进，63 个节点两分钟测一轮太费电/流量）
+#   GROUP_TOLERANCE - 延迟差在此毫秒数以内不切换节点（原值 0，差 1ms 就切，IP 会频繁跳）
+#   GROUP_LAZY      - 只在该分组被实际使用时才探活，未使用的分组不再空转测速
+GROUP_INTERVAL = 300
+GROUP_TOLERANCE = 50
+GROUP_LAZY = True
 SOURCE_TIMEOUT = 25
 LATENCY_TIMEOUT_MS = 5000
 MAX_RETRIES = 3
@@ -657,42 +664,59 @@ def build_config(metrics: list[ProxyMetric]) -> dict[str, Any]:
                 "type": "url-test",
                 "proxies": all_names,
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 50ms 容差 / 懒测
+                "interval": GROUP_INTERVAL,
+                "tolerance": GROUP_TOLERANCE,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "HK-POOL",
                 "type": "url-test",
                 "proxies": hk_names,
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 50ms 容差 / 懒测
+                "interval": GROUP_INTERVAL,
+                "tolerance": GROUP_TOLERANCE,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "JP-POOL",
                 "type": "url-test",
                 "proxies": jp_names,
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 50ms 容差 / 懒测
+                "interval": GROUP_INTERVAL,
+                "tolerance": GROUP_TOLERANCE,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "US-POOL",
                 "type": "url-test",
                 "proxies": us_names,
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 50ms 容差 / 懒测
+                "interval": GROUP_INTERVAL,
+                "tolerance": GROUP_TOLERANCE,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "AI-POOL",
                 "type": "url-test",
                 "proxies": ai_names,
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 50ms 容差 / 懒测
+                "interval": GROUP_INTERVAL,
+                "tolerance": GROUP_TOLERANCE,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "FALLBACK",
                 "type": "fallback",
                 "proxies": ["AUTO-FAST", "HK-POOL", "JP-POOL", "US-POOL"],
                 "url": TEST_URL,
-                "interval": 120,
+                # kzeng added: 300s 探活 / 懒测；fallback 按顺序取第一个可用，不适用 tolerance
+                "interval": GROUP_INTERVAL,
+                "lazy": GROUP_LAZY,
             },
             {
                 "name": "PROXY",
