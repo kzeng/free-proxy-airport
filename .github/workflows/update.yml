@@ -2,7 +2,11 @@ name: AI Self-Healing Proxy v7
 
 on:
   schedule:
-    - cron: "*/59 * * * *"
+    # 每小时整点执行一次。
+    - cron: "0 * * * *"
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -15,6 +19,8 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    # 工作流自身提交（github-actions[bot]）不再触发新的一轮，避免死循环。
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
