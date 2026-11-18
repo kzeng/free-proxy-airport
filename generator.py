@@ -44,36 +44,63 @@ MAX_WORKERS = int(os.getenv("FREE_PROXY_AIRPORT_MAX_WORKERS", "24"))
 MAX_CANDIDATES = int(os.getenv("FREE_PROXY_AIRPORT_MAX_CANDIDATES", "0"))
 
 SOURCE_GROUPS = [
-    {
-        "name": "openRunner clash-freenode",
-        "primary": "https://raw.githubusercontent.com/openRunner/clash-freenode/main/sub.yaml",
-        "fallbacks": [
-            "https://raw.githubusercontent.com/openRunner/clash-freenode/main/clash.yaml",
-            "https://raw.githubusercontent.com/openrunner/clash-freenode/main/clash.yaml",
-        ],
-    },
+    # kzeng added: openRunner 三个地址均返回 404，保留配置以便日后恢复。
+    # {
+    #     "name": "openRunner clash-freenode",
+    #     "primary": "https://raw.githubusercontent.com/openRunner/clash-freenode/main/sub.yaml",
+    #     "fallbacks": [
+    #         "https://raw.githubusercontent.com/openRunner/clash-freenode/main/clash.yaml",
+    #         "https://raw.githubusercontent.com/openrunner/clash-freenode/main/clash.yaml",
+    #     ],
+    # },
     {
         "name": "snakem982 proxypool",
-        "primary": "https://raw.githubusercontent.com/snakem982/proxypool/main/clash.yaml",
+        # kzeng added: 原 primary 返回 404，改用已验证可解析节点的备用地址。
+        # "primary": "https://raw.githubusercontent.com/snakem982/proxypool/main/clash.yaml",
+        "primary": "https://raw.githubusercontent.com/snakem982/proxypool/main/source/clash-meta-2.yaml",
         "fallbacks": [
-            "https://raw.githubusercontent.com/snakem982/proxypool/main/source/clash-meta-2.yaml",
             "https://raw.githubusercontent.com/snakem982/proxypool/main/source/clash-meta.yaml",
         ],
     },
+    # kzeng added: Flikify 及两个备用地址均解析出 0 个节点，保留配置以便日后恢复。
+    # {
+    #     "name": "Flikify Free-Node",
+    #     "primary": "https://raw.githubusercontent.com/Flikify/Free-Node/main/clash.yaml",
+    #     "fallbacks": [
+    #         "https://raw.githubusercontent.com/a2470982985/getNode/main/clash.yaml",
+    #         "https://cdn.jsdelivr.net/gh/a2470982985/getNode@main/clash.yaml",
+    #     ],
+    # },
     {
-        "name": "Flikify Free-Node",
-        "primary": "https://raw.githubusercontent.com/Flikify/Free-Node/main/clash.yaml",
+        "name": "zhuhaiuk free-nodes",
+        "primary": "https://raw.githubusercontent.com/zhuhaiuk/free-nodes/main/clash_config.yaml",
         "fallbacks": [
-            "https://raw.githubusercontent.com/a2470982985/getNode/main/clash.yaml",
-            "https://cdn.jsdelivr.net/gh/a2470982985/getNode@main/clash.yaml",
+            "https://raw.githubusercontent.com/zhuhaiuk/free-nodes/main/extra_clash_config.yaml",
         ],
     },
     {
-        "name": "free-clash-v2ray GitHub Pages",
-        "primary": "https://free-clash-v2ray.github.io/uploads/latest.yaml",
+        "name": "kooker FreeSubsCheck",
+        "primary": "https://raw.githubusercontent.com/kooker/FreeSubsCheck/main/all.yaml",
         "fallbacks": [
-            "discover:free-clash-v2ray",
+            "https://raw.githubusercontent.com/kooker/FreeSubsCheck/main/mihomo.yaml",
         ],
+    },
+    {
+        "name": "free-node-hub",
+        "primary": "https://raw.githubusercontent.com/liuweicool77-maker/free-node-hub/main/dist/free-proxies.yaml",
+        "fallbacks": [],
+    },
+    {
+        "name": "Billow001 free-nodes-sub",
+        "primary": "https://raw.githubusercontent.com/Billow001/free-nodes-sub/main/FreeNodes001.yaml",
+        "fallbacks": [],
+    },
+    {
+        "name": "free-clash-v2ray GitHub Pages",
+        # kzeng added: latest.yaml 返回 404；动态发现仍可找到当天的订阅文件。
+        # "primary": "https://free-clash-v2ray.github.io/uploads/latest.yaml",
+        "primary": "discover:free-clash-v2ray",
+        "fallbacks": [],
     },
 ]
 
@@ -218,8 +245,8 @@ def collect_proxies() -> tuple[int, list[dict[str, Any]]]:
 
 
 def expand_source_urls(source: dict[str, Any]) -> list[str]:
-    urls = [str(source["primary"])]
-    for item in source.get("fallbacks", []):
+    urls: list[str] = []
+    for item in [source["primary"], *source.get("fallbacks", [])]:
         if item == "discover:free-clash-v2ray":
             urls.extend(discover_free_clash_v2ray_urls())
         else:
