@@ -377,8 +377,16 @@ def find_or_install_mihomo() -> Path:
 
 def select_mihomo_asset() -> str:
     api_url = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-    data = requests.get(api_url, headers={"User-Agent": "free-proxy-airport"}, timeout=SOURCE_TIMEOUT).json()
-    assets = data.get("assets", [])
+    headers = {"User-Agent": "free-proxy-airport", "Accept": "application/vnd.github+json"}
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.get(api_url, headers=headers, timeout=SOURCE_TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("assets"), list):
+        raise RuntimeError("Mihomo latest release API returned no asset list")
+    assets = data["assets"]
     system = platform.system().lower()
     machine = platform.machine().lower()
 
@@ -418,7 +426,11 @@ def select_mihomo_asset() -> str:
         candidates.append((score, download_url))
 
     if not candidates:
-        raise RuntimeError("no matching Mihomo release asset found")
+        available = [str(asset.get("name")) for asset in assets if isinstance(asset, dict)]
+        raise RuntimeError(
+            f"no matching Mihomo asset for {system}/{machine} in release "
+            f"{data.get('tag_name', 'unknown')}; available assets: {available}"
+        )
     candidates.sort(reverse=True)
     return candidates[0][1]
 
@@ -791,14 +803,26 @@ def validate_config(config: dict[str, Any]) -> None:
             raise RuntimeError(f"generated config missing rule: {rule}")
 
 
-def print_summary(total_nodes: int, candidates: int, metrics: list[ProxyMetric]) -> None:
+def print_summary(
+    total_nodes: int,
+    candidates: int,
+    metrics: list[ProxyMetric],
+    passed_latency_test: int,
+    output_source: str,
+) -> None:
     hk_count = sum(1 for item in metrics if item.region == "HK")
     jp_count = sum(1 for item in metrics if item.region == "JP")
     us_count = sum(1 for item in metrics if item.region == "US")
-    avg_latency = round(sum(item.latency for item in metrics) / len(metrics), 2) if metrics else 0
+    avg_latency = (
+        round(sum(item.latency for item in metrics) / len(metrics), 2)
+        if passed_latency_test
+        else "n/a (no successful latency tests)"
+    )
     print(f"[SUMMARY] total_nodes={total_nodes}")
     print(f"[SUMMARY] legal_candidates={candidates}")
-    print(f"[SUMMARY] passed_latency_test={len(metrics)}")
+    print(f"[SUMMARY] passed_latency_test={passed_latency_test}")
+    print(f"[SUMMARY] output_nodes={len(metrics)}")
+    print(f"[SUMMARY] output_source={output_source}")
     print(f"[SUMMARY] region_HK={hk_count} region_JP={jp_count} region_US={us_count}")
     print(f"[SUMMARY] avg_latency_ms={avg_latency}")
     print(f"[SUMMARY] output={OUTPUT_PATH}")
@@ -809,25 +833,27 @@ def main() -> None:
     metrics: list[ProxyMetric] = []
 
     if candidates:
-        try:
-            metrics = benchmark_proxies(candidates)
-        except Exception as exc:
-            print(f"[WARN] real latency benchmark unavailable: {exc}")
+        # Benchmark infrastructure errors must fail the job before publishing stale output.
+        metrics = benchmark_proxies(candidates)
 
+    passed_latency_test = len(metrics)
+    output_source = "benchmark"
     if not metrics:
         metrics = load_existing_metrics()
         if metrics:
+            output_source = "previous_output"
             print("[WARN] no live nodes passed; reusing previous non-empty output as degraded fallback")
 
     if not metrics:
         metrics = [build_direct_fallback_metric()]
+        output_source = "direct_fallback"
         print("[WARN] no live or previous nodes; using DIRECT-FALLBACK degraded config")
 
     metrics.sort(key=lambda item: item.health_score, reverse=True)
     config = build_config(metrics)
     validate_config(config)
     write_config(config)
-    print_summary(total_nodes, len(candidates), metrics)
+    print_summary(total_nodes, len(candidates), metrics, passed_latency_test, output_source)
 
 
 if __name__ == "__main__":
