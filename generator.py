@@ -6,11 +6,11 @@ import hashlib
 import json
 import os
 import platform
-import random
 import re
 import shutil
 import socket
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -39,6 +39,9 @@ GROUP_TOLERANCE = 50
 GROUP_LAZY = True
 SOURCE_TIMEOUT = 25
 LATENCY_TIMEOUT_MS = 5000
+LATENCY_TEST_ATTEMPTS = 3
+MIN_SUCCESSFUL_TESTS = 2
+LATENCY_PROBE_INTERVAL = 1
 MAX_RETRIES = 3
 MAX_WORKERS = int(os.getenv("FREE_PROXY_AIRPORT_MAX_WORKERS", "24"))
 MAX_CANDIDATES = int(os.getenv("FREE_PROXY_AIRPORT_MAX_CANDIDATES", "0"))
@@ -124,6 +127,7 @@ REQUIRED_GROUPS = (
     "HK-POOL",
     "JP-POOL",
     "US-POOL",
+    "LOW-LATENCY-POOL",
     "AI-POOL",
     "FALLBACK",
     "PROXY",
@@ -557,15 +561,30 @@ def test_single_proxy(controller_url: str, proxy: dict[str, Any]) -> ProxyMetric
         f"{controller_url}/proxies/{quote(name, safe='')}/delay"
         f"?timeout={LATENCY_TIMEOUT_MS}&url={quote(TEST_URL, safe='')}"
     )
-    response = requests.get(url, timeout=(LATENCY_TIMEOUT_MS / 1000) + 3)
-    if response.status_code != 200:
+    latencies: list[int] = []
+    attempts = 0
+    for attempt in range(LATENCY_TEST_ATTEMPTS):
+        if attempt:
+            time.sleep(LATENCY_PROBE_INTERVAL)
+        attempts += 1
+        try:
+            response = requests.get(url, timeout=(LATENCY_TIMEOUT_MS / 1000) + 3)
+            if response.status_code == 200:
+                latency = int(response.json().get("delay", 0))
+                if 0 < latency <= LATENCY_TIMEOUT_MS:
+                    latencies.append(latency)
+        except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
+            pass
+        if len(latencies) >= MIN_SUCCESSFUL_TESTS:
+            break
+        if LATENCY_TEST_ATTEMPTS - attempts + len(latencies) < MIN_SUCCESSFUL_TESTS:
+            break
+
+    if len(latencies) < MIN_SUCCESSFUL_TESTS:
         return None
-    data = response.json()
-    latency = int(data.get("delay", 0))
-    if latency <= 0 or latency > LATENCY_TIMEOUT_MS:
-        return None
+    latency = round(statistics.median(latencies))
     region = detect_region(name)
-    score = health_score(name, latency, region)
+    score = health_score(latency, region, len(latencies) / attempts)
     return ProxyMetric(proxy=proxy, latency=latency, region=region, health_score=score)
 
 
@@ -621,10 +640,10 @@ def region_bonus(region: str) -> int:
     return 1
 
 
-def health_score(name: str, latency: int, region: str) -> float:
-    stability_seed = int(hashlib.sha256(name.encode("utf-8")).hexdigest()[:12], 16)
-    stability = random.Random(stability_seed).random()
-    return (1 / latency) * 0.6 + region_bonus(region) * 0.3 + stability * 0.1
+def health_score(latency: int, region: str, success_rate: float) -> float:
+    # Comparable 0–1 components: measured latency matters most; no name-based fake stability.
+    latency_score = 1 / (1 + latency / 500)
+    return 0.7 * latency_score + 0.25 * success_rate + 0.05 * region_bonus(region) / 3
 
 
 def low_latency_pool(metrics: list[ProxyMetric]) -> list[str]:
@@ -653,7 +672,7 @@ def build_config(metrics: list[ProxyMetric]) -> dict[str, Any]:
     hk_names = names_for_region(metrics, "HK")
     jp_names = names_for_region(metrics, "JP")
     us_names = names_for_region(metrics, "US")
-    ai_names = low_latency_pool(metrics)
+    low_latency_names = low_latency_pool(metrics)
 
     return {
         "mixed-port": 7890,
@@ -709,14 +728,20 @@ def build_config(metrics: list[ProxyMetric]) -> dict[str, Any]:
                 "lazy": GROUP_LAZY,
             },
             {
-                "name": "AI-POOL",
+                "name": "LOW-LATENCY-POOL",
                 "type": "url-test",
-                "proxies": ai_names,
+                "proxies": low_latency_names,
                 "url": TEST_URL,
                 # kzeng added: 300s 探活 / 50ms 容差 / 懒测
                 "interval": GROUP_INTERVAL,
                 "tolerance": GROUP_TOLERANCE,
                 "lazy": GROUP_LAZY,
+            },
+            {
+                # Backward compatibility for clients selecting the old group name.
+                "name": "AI-POOL",
+                "type": "select",
+                "proxies": ["LOW-LATENCY-POOL"],
             },
             {
                 "name": "FALLBACK",
@@ -734,10 +759,10 @@ def build_config(metrics: list[ProxyMetric]) -> dict[str, Any]:
             },
         ],
         "rules": [
-            "DOMAIN-SUFFIX,openai.com,AI-POOL",
-            "DOMAIN-SUFFIX,chatgpt.com,AI-POOL",
-            "DOMAIN-SUFFIX,claude.ai,AI-POOL",
-            "DOMAIN-SUFFIX,anthropic.com,AI-POOL",
+            "DOMAIN-SUFFIX,openai.com,LOW-LATENCY-POOL",
+            "DOMAIN-SUFFIX,chatgpt.com,LOW-LATENCY-POOL",
+            "DOMAIN-SUFFIX,claude.ai,LOW-LATENCY-POOL",
+            "DOMAIN-SUFFIX,anthropic.com,LOW-LATENCY-POOL",
             "GEOIP,CN,DIRECT",
             "MATCH,PROXY",
         ],
@@ -776,10 +801,10 @@ def validate_config(config: dict[str, Any]) -> None:
         raise RuntimeError(f"generated config missing groups: {missing}")
     rules = config.get("rules", [])
     for rule in (
-        "DOMAIN-SUFFIX,openai.com,AI-POOL",
-        "DOMAIN-SUFFIX,chatgpt.com,AI-POOL",
-        "DOMAIN-SUFFIX,claude.ai,AI-POOL",
-        "DOMAIN-SUFFIX,anthropic.com,AI-POOL",
+        "DOMAIN-SUFFIX,openai.com,LOW-LATENCY-POOL",
+        "DOMAIN-SUFFIX,chatgpt.com,LOW-LATENCY-POOL",
+        "DOMAIN-SUFFIX,claude.ai,LOW-LATENCY-POOL",
+        "DOMAIN-SUFFIX,anthropic.com,LOW-LATENCY-POOL",
         "GEOIP,CN,DIRECT",
         "MATCH,PROXY",
     ):

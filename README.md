@@ -16,18 +16,20 @@ https://kzeng.github.io/docs/clash.yaml
 
 节点源：
 
-- openRunner clash-freenode
 - snakem982 proxypool
-- Flikify Free Node
+- zhuhaiuk free-nodes
+- kooker FreeSubsCheck
+- free-node-hub
+- Billow001 free-nodes-sub
 - free-clash-v2ray GitHub Pages
 
 核心能力：
 
-- 真实测速和 timeout 自动剔除
-- 节点健康评分排序
-- HK / JP / US / AI 自动分组
+- 每个节点最多测 3 次、至少成功 2 次才收录
+- 基于实测延迟和成功率排序
+- HK / JP / US / LOW-LATENCY 自动分组（保留 AI-POOL 兼容别名）
 - FALLBACK 自动降级
-- OpenAI / ChatGPT / Claude / Anthropic 智能分流
+- OpenAI / ChatGPT / Claude / Anthropic 流量走低延迟组；不保证这些服务对节点开放
 
 输出文件：
 

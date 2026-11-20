@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -107,6 +107,48 @@ class PublicationValidationTests(unittest.TestCase):
         self.config["proxies"] = [{"name": "DIRECT-FALLBACK", "type": "direct"}]
         with self.assertRaisesRegex(RuntimeError, "non-proxy fallback"):
             generator.validate_config(self.config)
+
+    def test_low_latency_routing_and_legacy_alias(self):
+        groups = {group["name"]: group for group in self.config["proxy-groups"]}
+        self.assertEqual(groups["LOW-LATENCY-POOL"]["type"], "url-test")
+        self.assertEqual(groups["AI-POOL"]["proxies"], ["LOW-LATENCY-POOL"])
+        self.assertIn("DOMAIN-SUFFIX,openai.com,LOW-LATENCY-POOL", self.config["rules"])
+
+
+class RepeatedProbeTests(unittest.TestCase):
+    def response(self, latency):
+        response = Mock(status_code=200)
+        response.json.return_value = {"delay": latency}
+        return response
+
+    @patch("generator.time.sleep")
+    @patch("generator.requests.get")
+    def test_two_successes_are_required_and_median_latency_used(self, get, _sleep):
+        get.side_effect = [self.response(100), self.response(300)]
+        proxy = {"name": "test", "type": "ss"}
+        metric = generator.test_single_proxy("http://localhost", proxy)
+        self.assertIsNotNone(metric)
+        self.assertEqual(metric.latency, 200)
+        self.assertEqual(get.call_count, 2)
+
+    @patch("generator.time.sleep")
+    @patch("generator.requests.get")
+    def test_one_failure_then_two_successes(self, get, _sleep):
+        get.side_effect = [requests.Timeout(), self.response(120), self.response(180)]
+        metric = generator.test_single_proxy("http://localhost", {"name": "test"})
+        self.assertEqual(metric.latency, 150)
+        self.assertAlmostEqual(metric.health_score, generator.health_score(150, "OTHER", 2 / 3))
+
+    @patch("generator.time.sleep")
+    @patch("generator.requests.get")
+    def test_two_failures_reject_node(self, get, _sleep):
+        get.side_effect = [requests.Timeout(), requests.Timeout()]
+        self.assertIsNone(generator.test_single_proxy("http://localhost", {"name": "test"}))
+        self.assertEqual(get.call_count, 2)
+
+    def test_latency_and_success_rate_dominate_region(self):
+        self.assertGreater(generator.health_score(100, "OTHER", 1), generator.health_score(1500, "HK", 1))
+        self.assertGreater(generator.health_score(300, "HK", 1), generator.health_score(300, "HK", 2 / 3))
 
 
 if __name__ == "__main__":

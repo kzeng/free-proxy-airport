@@ -74,7 +74,8 @@ jobs:
               "HK-POOL": "url-test",
               "JP-POOL": "url-test",
               "US-POOL": "url-test",
-              "AI-POOL": "url-test",
+              "LOW-LATENCY-POOL": "url-test",
+              "AI-POOL": "select",
               "FALLBACK": "fallback",
               "PROXY": "select",
           }
@@ -89,10 +90,10 @@ jobs:
 
           rules = data["rules"]
           for rule in (
-              "DOMAIN-SUFFIX,openai.com,AI-POOL",
-              "DOMAIN-SUFFIX,chatgpt.com,AI-POOL",
-              "DOMAIN-SUFFIX,claude.ai,AI-POOL",
-              "DOMAIN-SUFFIX,anthropic.com,AI-POOL",
+              "DOMAIN-SUFFIX,openai.com,LOW-LATENCY-POOL",
+              "DOMAIN-SUFFIX,chatgpt.com,LOW-LATENCY-POOL",
+              "DOMAIN-SUFFIX,claude.ai,LOW-LATENCY-POOL",
+              "DOMAIN-SUFFIX,anthropic.com,LOW-LATENCY-POOL",
               "GEOIP,CN,DIRECT",
               "MATCH,PROXY",
           ):
