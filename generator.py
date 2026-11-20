@@ -18,7 +18,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -42,6 +42,7 @@ LATENCY_TIMEOUT_MS = 5000
 MAX_RETRIES = 3
 MAX_WORKERS = int(os.getenv("FREE_PROXY_AIRPORT_MAX_WORKERS", "24"))
 MAX_CANDIDATES = int(os.getenv("FREE_PROXY_AIRPORT_MAX_CANDIDATES", "0"))
+MAX_OUTPUT_AGE = timedelta(hours=24)
 
 SOURCE_GROUPS = [
     # kzeng added: openRunner 三个地址均返回 404，保留配置以便日后恢复。
@@ -643,40 +644,9 @@ def names_for_region(metrics: list[ProxyMetric], region: str) -> list[str]:
     return ["DIRECT"]
 
 
-def build_direct_fallback_metric() -> ProxyMetric:
-    proxy = {"name": "DIRECT-FALLBACK", "type": "direct", "udp": True}
-    return ProxyMetric(proxy=proxy, latency=LATENCY_TIMEOUT_MS, region="OTHER", health_score=0.0)
-
-
-def load_existing_metrics() -> list[ProxyMetric]:
-    if not OUTPUT_PATH.exists():
-        return []
-    try:
-        data = yaml.safe_load(OUTPUT_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict) or not isinstance(data.get("proxies"), list):
-        return []
-    metrics: list[ProxyMetric] = []
-    for proxy in data["proxies"]:
-        if not isinstance(proxy, dict):
-            continue
-        name = str(proxy.get("name", ""))
-        region = detect_region(name)
-        metrics.append(
-            ProxyMetric(
-                proxy=dict(proxy),
-                latency=LATENCY_TIMEOUT_MS,
-                region=region,
-                health_score=health_score(name, LATENCY_TIMEOUT_MS, region),
-            )
-        )
-    return metrics
-
-
 def build_config(metrics: list[ProxyMetric]) -> dict[str, Any]:
     if not metrics:
-        metrics = [build_direct_fallback_metric()]
+        raise ValueError("cannot build a subscription without tested live nodes")
 
     proxies = [item.proxy for item in metrics]
     all_names = [item.proxy["name"] for item in metrics]
@@ -785,6 +755,20 @@ def write_config(config: dict[str, Any]) -> None:
 def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(config.get("proxies"), list) or not config["proxies"]:
         raise RuntimeError("generated config has no proxies")
+    if any(
+        not isinstance(proxy, dict) or proxy.get("type") not in SUPPORTED_PROXY_TYPES
+        for proxy in config["proxies"]
+    ):
+        raise RuntimeError("generated config contains a non-proxy fallback or unsupported node")
+    try:
+        generated_at = datetime.fromisoformat(config["generated-at"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("generated config has no valid generated-at timestamp") from exc
+    if generated_at.tzinfo is None:
+        raise RuntimeError("generated-at must include a timezone")
+    age = datetime.now(timezone.utc) - generated_at
+    if age > MAX_OUTPUT_AGE or age < -timedelta(minutes=5):
+        raise RuntimeError("generated config timestamp is stale or too far in the future")
     groups = config.get("proxy-groups", [])
     group_names = {group.get("name") for group in groups if isinstance(group, dict)}
     missing = [name for name in REQUIRED_GROUPS if name not in group_names]
@@ -830,30 +814,18 @@ def print_summary(
 
 def main() -> None:
     total_nodes, candidates = collect_proxies()
-    metrics: list[ProxyMetric] = []
-
-    if candidates:
-        # Benchmark infrastructure errors must fail the job before publishing stale output.
-        metrics = benchmark_proxies(candidates)
-
-    passed_latency_test = len(metrics)
-    output_source = "benchmark"
+    if not candidates:
+        raise RuntimeError("no candidates from sources; keeping the published subscription unchanged")
+    # Benchmark infrastructure errors must fail the job before publishing stale output.
+    metrics = benchmark_proxies(candidates)
     if not metrics:
-        metrics = load_existing_metrics()
-        if metrics:
-            output_source = "previous_output"
-            print("[WARN] no live nodes passed; reusing previous non-empty output as degraded fallback")
-
-    if not metrics:
-        metrics = [build_direct_fallback_metric()]
-        output_source = "direct_fallback"
-        print("[WARN] no live or previous nodes; using DIRECT-FALLBACK degraded config")
+        raise RuntimeError("no nodes passed latency tests; keeping the published subscription unchanged")
 
     metrics.sort(key=lambda item: item.health_score, reverse=True)
     config = build_config(metrics)
     validate_config(config)
     write_config(config)
-    print_summary(total_nodes, len(candidates), metrics, passed_latency_test, output_source)
+    print_summary(total_nodes, len(candidates), metrics, len(metrics), "benchmark")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,26 @@ class MihomoReleaseTests(unittest.TestCase):
 
 
 class BenchmarkFailureTests(unittest.TestCase):
+    def assert_keeps_output(self, candidates, benchmark_result):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "clash.yaml"
+            output.write_text("previous valid subscription", encoding="utf-8")
+            with (
+                patch.object(generator, "OUTPUT_PATH", output),
+                patch.object(generator, "collect_proxies", return_value=(1, candidates)),
+                patch.object(generator, "benchmark_proxies", return_value=benchmark_result) as benchmark,
+            ):
+                with self.assertRaises(RuntimeError):
+                    generator.main()
+            self.assertEqual(output.read_text(encoding="utf-8"), "previous valid subscription")
+            return benchmark
+
+    def test_empty_sources_do_not_publish_direct_fallback(self):
+        self.assert_keeps_output([], []).assert_not_called()
+
+    def test_no_live_nodes_do_not_publish_stale_fallback(self):
+        self.assert_keeps_output([{"name": "node"}], []).assert_called_once()
+
     def test_infrastructure_failure_does_not_replace_existing_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "clash.yaml"
@@ -57,12 +78,35 @@ class BenchmarkFailureTests(unittest.TestCase):
                 patch.object(generator, "OUTPUT_PATH", output),
                 patch.object(generator, "collect_proxies", return_value=(1, [{"name": "node"}])),
                 patch.object(generator, "benchmark_proxies", side_effect=RuntimeError("Mihomo unavailable")),
-                patch.object(generator, "load_existing_metrics") as load_existing,
             ):
                 with self.assertRaisesRegex(RuntimeError, "Mihomo unavailable"):
                     generator.main()
             self.assertEqual(output.read_text(encoding="utf-8"), "previous valid subscription")
-            load_existing.assert_not_called()
+
+
+class PublicationValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.config = generator.build_config([
+            generator.ProxyMetric(
+                proxy={"name": "node", "type": "ss", "server": "127.0.0.1", "port": 443},
+                latency=100,
+                region="OTHER",
+                health_score=0.1,
+            )
+        ])
+
+    def test_valid_fresh_subscription(self):
+        generator.validate_config(self.config)
+
+    def test_rejects_stale_subscription(self):
+        self.config["generated-at"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        with self.assertRaisesRegex(RuntimeError, "stale"):
+            generator.validate_config(self.config)
+
+    def test_rejects_direct_only_subscription(self):
+        self.config["proxies"] = [{"name": "DIRECT-FALLBACK", "type": "direct"}]
+        with self.assertRaisesRegex(RuntimeError, "non-proxy fallback"):
+            generator.validate_config(self.config)
 
 
 if __name__ == "__main__":
