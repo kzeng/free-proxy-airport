@@ -42,6 +42,7 @@ LATENCY_TIMEOUT_MS = 5000
 LATENCY_TEST_ATTEMPTS = 3
 MIN_SUCCESSFUL_TESTS = 2
 LATENCY_PROBE_INTERVAL = 1
+MAX_CONFIG_CHECKS = 64
 MAX_RETRIES = 3
 MAX_WORKERS = int(os.getenv("FREE_PROXY_AIRPORT_MAX_WORKERS", "24"))
 MAX_CANDIDATES = int(os.getenv("FREE_PROXY_AIRPORT_MAX_CANDIDATES", "0"))
@@ -470,8 +471,11 @@ def extract_mihomo_binary(archive: Path, directory: Path) -> Path:
 
 def write_benchmark_config(path: Path, proxies: list[dict[str, Any]], controller_port: int) -> None:
     names = [str(proxy["name"]) for proxy in proxies]
+    mixed_port = find_free_port()
+    while mixed_port == controller_port:
+        mixed_port = find_free_port()
     config = {
-        "mixed-port": find_free_port(),
+        "mixed-port": mixed_port,
         "allow-lan": False,
         "mode": "rule",
         "log-level": "warning",
@@ -489,10 +493,110 @@ def write_benchmark_config(path: Path, proxies: list[dict[str, Any]], controller
     path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
-def wait_for_controller(controller_url: str, process: subprocess.Popen[str]) -> None:
+def engine_log_summary(log_path: Path, proxies: list[dict[str, Any]]) -> str:
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    excerpt = lines if len(lines) <= 20 else lines[:10] + ["... (log truncated) ..."] + lines[-10:]
+    summary = ("\n".join(excerpt) or "(no engine output)")[:4000]
+    # Upstream node configs may contain credentials; never include them in CI logs.
+    secrets: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).lower() in {"password", "uuid", "private-key", "token", "auth-str"}:
+                    if isinstance(item, str) and item:
+                        secrets.add(item)
+                else:
+                    collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    collect(proxies)
+    for secret in sorted(secrets, key=len, reverse=True):
+        summary = summary.replace(secret, "***")
+    return summary
+
+
+def check_benchmark_config(
+    engine: Path, temp_dir: Path, proxies: list[dict[str, Any]], controller_port: int
+) -> tuple[bool, str]:
+    config_path = temp_dir / "benchmark.yaml"
+    write_benchmark_config(config_path, proxies, controller_port)
+    try:
+        check = subprocess.run(
+            [str(engine), "-t", "-d", str(temp_dir), "-f", str(config_path)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Mihomo config check timed out with {len(proxies)} nodes") from exc
+    if check.returncode == 0:
+        return True, ""
+    log_path = temp_dir / "config-check.log"
+    log_path.write_text(check.stdout + check.stderr, encoding="utf-8")
+    return False, engine_log_summary(log_path, proxies)
+
+
+def filter_invalid_benchmark_proxies(
+    engine: Path, temp_dir: Path, proxies: list[dict[str, Any]], controller_port: int
+) -> list[dict[str, Any]]:
+    checks = 0
+
+    def check(items: list[dict[str, Any]]) -> tuple[bool, str]:
+        nonlocal checks
+        checks += 1
+        if checks > MAX_CONFIG_CHECKS:
+            raise RuntimeError(f"Mihomo config isolation exceeded {MAX_CONFIG_CHECKS} checks; preserving published output")
+        return check_benchmark_config(engine, temp_dir, items, controller_port)
+
+    valid, error = check(proxies)
+    if valid:
+        print(f"[INFO] Mihomo config check passed for {len(proxies)} candidates")
+        return proxies
+
+    # An engine/environment failure also occurs with zero nodes: don't blame the sources.
+    baseline_valid, baseline_error = check([])
+    if not baseline_valid:
+        raise RuntimeError(f"Mihomo cannot load an empty benchmark config:\n{baseline_error}")
+
+    def isolate(items: list[dict[str, Any]], known_error: str | None = None) -> list[dict[str, Any]]:
+        if known_error is None:
+            valid, error = check(items)
+        else:
+            valid, error = False, known_error
+        if valid:
+            return items
+        if len(items) == 1:
+            fingerprint = proxy_fingerprint(items[0])[:12]
+            print(f"[DROP] invalid Mihomo config for node fingerprint={fingerprint}: {error}")
+            return []
+        middle = len(items) // 2
+        return isolate(items[:middle]) + isolate(items[middle:])
+
+    print(f"[WARN] Mihomo rejected the candidate config; isolating invalid nodes:\n{error}")
+    filtered = isolate(proxies, error)
+    if not filtered:
+        raise RuntimeError("Mihomo rejected all candidate nodes; keeping published subscription unchanged")
+    valid, error = check(filtered)
+    if not valid:
+        raise RuntimeError(f"Mihomo still rejects combined candidate config:\n{error}")
+    print(f"[WARN] removed {len(proxies) - len(filtered)} invalid nodes before benchmarking ({checks} config checks)")
+    return filtered
+
+
+def wait_for_controller(
+    controller_url: str, process: subprocess.Popen[str], log_path: Path, proxies: list[dict[str, Any]]
+) -> None:
     for _ in range(60):
         if process.poll() is not None:
-            raise RuntimeError("Mihomo exited before controller became ready")
+            raise RuntimeError(
+                f"Mihomo exited before controller became ready (exit {process.returncode}):\n"
+                f"{engine_log_summary(log_path, proxies)}"
+            )
         try:
             response = requests.get(f"{controller_url}/version", timeout=1)
             if response.status_code == 200:
@@ -500,7 +604,7 @@ def wait_for_controller(controller_url: str, process: subprocess.Popen[str]) -> 
         except Exception:
             pass
         time.sleep(0.5)
-    raise RuntimeError("Mihomo controller did not become ready")
+    raise RuntimeError(f"Mihomo controller did not become ready:\n{engine_log_summary(log_path, proxies)}")
 
 
 def benchmark_proxies(proxies: list[dict[str, Any]]) -> list[ProxyMetric]:
@@ -508,27 +612,44 @@ def benchmark_proxies(proxies: list[dict[str, Any]]) -> list[ProxyMetric]:
         return []
 
     engine = find_or_install_mihomo()
+    try:
+        version = subprocess.run(
+            [str(engine), "-v"], capture_output=True, text=True, errors="replace", timeout=10, check=False
+        )
+        version_line = (version.stdout + version.stderr).splitlines()
+        version_label = version_line[0][:160] if version_line else "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        version_label = "unavailable"
+    print(f"[INFO] Mihomo engine={engine} version={version_label}", flush=True)
     with tempfile.TemporaryDirectory(prefix="free-proxy-airport-") as temp_name:
         temp_dir = Path(temp_name)
         config_path = temp_dir / "benchmark.yaml"
         controller_port = find_free_port()
         controller_url = f"http://127.0.0.1:{controller_port}"
-        write_benchmark_config(config_path, proxies, controller_port)
+        started = time.monotonic()
+        print(f"[INFO] preflighting {len(proxies)} candidates with Mihomo config test", flush=True)
+        proxies = filter_invalid_benchmark_proxies(engine, temp_dir, proxies, controller_port)
+        print(f"[INFO] preflight completed in {time.monotonic() - started:.1f}s", flush=True)
 
-        process = subprocess.Popen(
-            [str(engine), "-d", str(temp_dir), "-f", str(config_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            wait_for_controller(controller_url, process)
-            metrics = run_delay_tests(controller_url, proxies)
-        finally:
-            process.terminate()
+        log_path = temp_dir / "mihomo.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                [str(engine), "-d", str(temp_dir), "-f", str(config_path)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+                wait_for_controller(controller_url, process, log_path, proxies)
+                print(f"[INFO] Mihomo controller ready on localhost:{controller_port}", flush=True)
+                metrics = run_delay_tests(controller_url, proxies)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        print(f"[INFO] benchmark finished in {time.monotonic() - started:.1f}s; kept={len(metrics)}/{len(proxies)}", flush=True)
         return metrics
 
 

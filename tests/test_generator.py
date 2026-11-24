@@ -151,5 +151,56 @@ class RepeatedProbeTests(unittest.TestCase):
         self.assertGreater(generator.health_score(300, "HK", 1), generator.health_score(300, "HK", 2 / 3))
 
 
+class MihomoStartupTests(unittest.TestCase):
+    @patch("generator.subprocess.run")
+    def test_preflight_error_reports_engine_output_without_password(self, run):
+        run.return_value = Mock(returncode=1, stdout="", stderr="invalid password secret-pass")
+        with tempfile.TemporaryDirectory() as directory:
+            ok, detail = generator.check_benchmark_config(
+                Path("mihomo"), Path(directory),
+                [{"name": "test", "type": "ss", "server": "example.org", "port": 443, "password": "secret-pass"}],
+                9090,
+            )
+        self.assertFalse(ok)
+        self.assertIn("invalid password", detail)
+        self.assertNotIn("secret-pass", detail)
+
+    def test_error_log_redacts_node_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "mihomo.log"
+            log.write_text("failed for uuid secret-uuid and password secret-pass", encoding="utf-8")
+            summary = generator.engine_log_summary(
+                log, [{"uuid": "secret-uuid", "password": "secret-pass"}]
+            )
+            self.assertNotIn("secret-uuid", summary)
+            self.assertNotIn("secret-pass", summary)
+            self.assertIn("***", summary)
+
+    @patch("generator.check_benchmark_config")
+    def test_invalid_node_is_isolated_before_start(self, check):
+        good = {"name": "good", "type": "ss", "server": "a", "port": 443}
+        bad = {"name": "bad", "type": "ss", "server": "b", "port": 443}
+        check.side_effect = lambda _engine, _dir, items, _port: (
+            (False, "invalid node") if bad in items else (True, "")
+        )
+        result = generator.filter_invalid_benchmark_proxies(Path("mihomo"), Path("."), [good, bad], 9090)
+        self.assertEqual(result, [good])
+
+    @patch("generator.check_benchmark_config")
+    def test_engine_failure_does_not_drop_all_nodes(self, check):
+        check.return_value = (False, "engine cannot start")
+        with self.assertRaisesRegex(RuntimeError, "empty benchmark config"):
+            generator.filter_invalid_benchmark_proxies(Path("mihomo"), Path("."), [{"name": "good"}], 9090)
+
+    def test_controller_error_includes_exit_code_and_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "mihomo.log"
+            log.write_text("invalid proxy configuration", encoding="utf-8")
+            process = Mock(returncode=1)
+            process.poll.return_value = 1
+            with self.assertRaisesRegex(RuntimeError, "(?s)exit 1.*invalid proxy configuration"):
+                generator.wait_for_controller("http://localhost", process, log, [])
+
+
 if __name__ == "__main__":
     unittest.main()
